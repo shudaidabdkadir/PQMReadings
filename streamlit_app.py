@@ -65,7 +65,9 @@ def prepare_pqm_data(uploaded_files):
     df = df.set_index(time_column)
 
     measurement_columns = [column for column in df.columns if column != time_column]
-    numeric_df = df[measurement_columns].apply(pd.to_numeric, errors="coerce")
+    numeric_df = df[measurement_columns].apply(
+        lambda col: pd.to_numeric(col.astype(str).str.replace(",", "", regex=False), errors="coerce")
+    )
     numeric_df = numeric_df.dropna(how="all", axis=1)
 
     if numeric_df.empty:
@@ -87,7 +89,11 @@ def compute_pt_sum(series: pd.Series):
         return None
     return values.sum()
 
-
+def compute_total_kwh_usage(series: pd.Series):
+    values = series.dropna()
+    if values.empty:
+        return None
+    return values.sum()
 def format_timedelta(duration: pd.Timedelta) -> str:
     seconds = int(duration.total_seconds())
     if seconds % 3600 == 0:
@@ -343,21 +349,41 @@ if uploaded_files:
 
         st.markdown("---")
         st.write("### Total usage summary")
+        with st.expander("Select summary items", expanded=True):
+            show_import_delta = st.checkbox("Import kWh delta", value=True, key="show_import_delta")
+            show_import_minmax = st.checkbox("Import kWh min/max", value=True, key="show_import_minmax")
+            show_import_total = st.checkbox("Total kWh usage", value=True, key="show_import_total")
+            show_pt_total = st.checkbox("PT total usage", value=True, key="show_pt_total")
+            show_pt_minmax = st.checkbox("PT min/max", value=True, key="show_pt_minmax")
+            show_pt_peaks = st.checkbox("PT top peaks", value=True, key="show_pt_peaks")
+            show_pt_avg = st.checkbox("PT avg peak range", value=True, key="show_pt_avg_peak")
+
         summary_shown = False
         for parameter in selected_parameters:
             series = aggregated_df[parameter].dropna()
             normalized = normalize_name(parameter)
             if normalized == normalize_name("Import kWh"):
                 if len(series) >= 2:
-                    delta = compute_series_delta(series)
-                    st.write(f"**{parameter}:** {delta:.3f} (last - first from {series.index[0]} to {series.index[-1]})")
+                    if show_import_delta:
+                        delta = compute_series_delta(series)
+                        st.write(f"**{parameter}:** {delta:.3f} (last - first from {series.index[0]} to {series.index[-1]})")
+                    if show_import_minmax:
+                        st.write(f"**Min:** {series.min():.3f} kWh, **Max:** {series.max():.3f} kWh")
+                    if show_import_total:
+                        total_usage = compute_total_kwh_usage(series)
+                        if total_usage is not None:
+                            st.write(f"**Total kWh usage:** {total_usage:.3f} kWh")
                 else:
                     st.write(f"**{parameter}:** Not enough data to calculate total usage.")
                 summary_shown = True
             elif normalized == normalize_name("PT (kW)"):
-                total = compute_pt_sum(series)
-                if total is not None:
-                    st.write(f"**{parameter}:** {total:.3f} (sum of all PT entries from {series.index[0]} to {series.index[-1]})")
+                if show_pt_total:
+                    total = compute_pt_sum(series)
+                    if total is not None:
+                        st.write(f"**{parameter}:** {total:.3f} (sum of all PT entries from {series.index[0]} to {series.index[-1]})")
+                if show_pt_minmax:
+                    st.write(f"**Min:** {series.min():.3f} kW, **Max:** {series.max():.3f} kW")
+                if show_pt_peaks:
                     peaks = compute_pt_peaks(series, top_n=3)
                     if peaks:
                         st.write("#### Top 3 PT peaks")
@@ -367,12 +393,17 @@ if uploaded_files:
                                 f"avg {peak['avg']:.3f} kW over {format_timedelta(peak['duration'])} "
                                 f"({peak['start']} to {peak['end']})"
                             )
-                        avg_peak_result = compute_pt_average_peak(series, bin_width=0.5)
-                        if avg_peak_result is not None:
-                            avg_peak_value, peak_bin = avg_peak_result
-                            st.write(f"#### Avg Peak = {avg_peak_value:.3f} kW (most frequent range during Office Hour (9am- 8pm) {peak_bin})")
-                else:
-                    st.write(f"**{parameter}:** Not enough data to calculate total usage.")
+                if show_pt_avg:
+                    avg_peak_result = compute_pt_average_peak(series, bin_width=0.5)
+                    if avg_peak_result is not None:
+                        avg_peak_value, peak_bin = avg_peak_result
+                        lower_bound = peak_bin.left
+                        upper_bound = peak_bin.right
+                        st.write("#### Most frequent range during Office Hour (9am-8pm)")
+                        st.write(
+                            f"Avg Peak = {avg_peak_value:.3f} kW "
+                            f"({lower_bound:.3f} to {upper_bound:.3f} kW)"
+                        )
                 summary_shown = True
         if not summary_shown:
             st.write("No selected Import kWh or PT (kW) parameters for a total usage summary.")
